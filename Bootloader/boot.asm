@@ -39,31 +39,7 @@ ebr_system_id:              db 'FAT12'             ; 8 bytes
 
 
 start:
-    jmp main
 
-
-puts:
-    push si
-    push ax
-    push bx
-
-.loop:
-    lodsb           ;load next character in al
-    or al,bl
-    jz .done
-
-    mov ah,0x0e      ;bios interrupt
-    mov bh,0 
-    int 0x10
-
-    jmp .loop
-
-.done:
-    pop ax
-    pop si
-    ret 
-
-main:
     mov ax,0
     mov ds,ax
     mov es,ax
@@ -71,22 +47,95 @@ main:
     mov ss,ax
     mov sp,0x7c00  
 
+    push es
+    push word .after
+    retf
+
+.after:
+
+
     mov[ebr_drive_number], dl
-    mov ax,1                        ;LBA=1, second sector from disk
-    mov cl,1                        ; 1 sector to read
-    mov bx,0x7e00
-    call disk_read
+   
 
 
-
+    ;Show loading message
     mov si,msg
     call puts
+
+    ;read drive parameters (sectors per track and head count)
+    push es
+    mov ah,08h
+    int 13h
+    jc floppy_error
+    pop es
+
+    and cl,0x3F         ;remove top 2 bits
+    xor ch,ch
+    mov [bdb_sectors_per_track],cx  ;Sector count
+
+    inc dh
+    mov[bdb_heads],dh
+
+    ;calculate LBA of root dir = reserved + fats * sectors_per_fat 
+    mov ax,[bdb_sectors_per_fat]
+    mov bl,[bdb_fat_count]
+    xor bh,bh
+    mul bx                          ;dx:ax = (fats * sectors_per_fat)
+    add ax,[bdb_reserved_sectors]   ;LBA of root dir
+    push ax
+
+    ;calculating the size of root dir =  (32 * number_of_entries) / bytes_per_sectors
+    mov ax,[bdb_sectors_per_fat]
+    shl ax,5
+    xor dx,dx
+    div word [bdb_bytes_per_sector]     ;no. of sectors to read
+
+    test dx,dx                          ;if dx!=0, add 1
+    jz root_dir_after
+    inc ax                              ; if div remainder !=0, inc 1
+
+
+.root_dir_after:
+    mov cl,al                           ;ck = no. of sectors to read
+    pop ax                              ;ax = LBA of root dir
+    mov dl,[ebr_drive_number]           ;dl = drive no.
+    mov bx,buffer
+    call disk_read
+
+    ;search for kernel.bin
+    xor bx,bx
+    mov di,buffer
+
+.search_kernel:
+    mov si, file_kernel_bin
+    mov cx,11
+    push di
+    repe cmpsb
+    pop di
+    je .found_kernel
+
+    add di,32
+    inc bx
+    cmp bx,[bdb_dir_entries_count]
+    jl .search_kernel
+
+    ;if kernel isn't found
+    jmp kernel_not_found
+
+.found_kernel:
+    
+
 
     cli 
     hlt
 
 floppy_error:
     mov si,msg_failed
+    call puts
+    jmp wait_key_and_reboot
+
+kernel_not_found:
+    mov si, msg_kernel_not_found
     call puts
     jmp wait_key_and_reboot
 
@@ -196,8 +245,10 @@ disk_reset:
 
 
 
-msg : db 'Hello world',ENDL,0
-msg_failed : db 'Disk reading failed' ENDL,0
+msg :                   db 'Loading...',ENDL,0
+msg_failed :            db 'Disk reading failed' ENDL,0
+msg_kernel_not_found:   db 'KERNEL.bin not found',ENDL,0
+file_kernel_bin:        db 'KERNEL  BIN'
 
 times 510-($-$$) db 0            ; pad to 510 bytes
 dw 0AA55h                        ;boot signature  
