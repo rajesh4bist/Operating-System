@@ -91,7 +91,7 @@ start:
     div word [bdb_bytes_per_sector]     ;no. of sectors to read
 
     test dx,dx                          ;if dx!=0, add 1
-    jz root_dir_after
+    jz .root_dir_after
     inc ax                              ; if div remainder !=0, inc 1
 
 
@@ -123,8 +123,72 @@ start:
     jmp kernel_not_found
 
 .found_kernel:
-    
+    mov ax,[di+26]
+    mov [kernel_cluster],ax
 
+    ;load FAT from disk to memory
+    mov ax, [bdb_reserved_sectors]
+    mov bx,buffer
+    mov cl,[bdb_sectors_per_fat]
+    mov dl,[ebr_drive_number]
+    call disk_read
+    
+    ;read kernel and process FAT chain
+    mov bx,KERNEL_LOAD_SEGMENT
+    mov es,bx
+    mov bx,KERNEL_LOAD_OFFSET
+
+.load_kernel_loop:
+    ;read next cluster
+    mov ax,[kernel_cluster]               ;first_cluster = (kernel_cluster -2) *  sectors_per_cluster + start_sector
+    ;hardcoded value
+    add ax,31
+
+    mov cl,1
+    mov dl,[ebr_drive_number]
+    call disk_read
+
+    add bx,[bdb_bytes_per_sector]
+
+    ;calculate location of next cluster
+    mov ax,[kernel_cluster]
+    mov cx,3
+    mul cx
+    mov cx,2
+    div cx
+
+    mov si, buffer
+    add si,ax
+    mov ax,[ds:si]
+
+    or dx,dx
+    jz .even 
+
+.odd:
+    shr ax,4
+    jmp .next_cluster_after
+
+.even:
+    and ax,0x0FFF
+
+.next_cluster_after:
+    cmp ax,0x0FF8               ;end of chain
+    jae .read_finish
+
+    mov [kernel_cluster],ax
+    jmp .load_kernel_loop
+
+.read_finish:
+
+    ;jump to kernel
+    mov dl,[ebr_drive_number]
+    mov ax, KERNEL_LOAD_SEGMENT
+    mov ds,ax
+    mov es,ax
+
+    jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET
+
+    jmp wait_key_and_reboot
 
     cli 
     hlt
@@ -149,6 +213,29 @@ wait_key_and_reboot:
 .halt:
     cli                             ;disable interrupts
     hlt   
+
+puts:
+    push si
+    push ax
+    push bx
+
+.loop:
+    lodsb
+    or al,al
+    jz .done
+
+    mov ah,0x0E
+    mov bh,0
+    int 0x10
+
+    jmp .loop
+
+.done:
+    pop bx
+    pop ax
+    pop si
+    ret
+    
 
 ;Floppy disk routines
 ;LBA to CHS addressing
@@ -232,6 +319,8 @@ disk_read:
     pop bx
     pop ax
 
+    ret
+
 
 disk_reset:
     pusha
@@ -249,7 +338,13 @@ msg :                   db 'Loading...',ENDL,0
 msg_failed :            db 'Disk reading failed' ENDL,0
 msg_kernel_not_found:   db 'KERNEL.bin not found',ENDL,0
 file_kernel_bin:        db 'KERNEL  BIN'
+kernel_cluster:         dw 0 
+
+KERNEL_LOAD_SEGMENT     equ 0x2000
+KERNEL_LOAD_OFFSET      equ 0
 
 times 510-($-$$) db 0            ; pad to 510 bytes
 dw 0AA55h                        ;boot signature  
+
+buffer:
 
