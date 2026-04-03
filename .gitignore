@@ -1,5 +1,5 @@
 bootloader.bin
-Kernel/main.asm
+# Kernel/main.asm
 Bootloader/main.c
 test.txt
 KERNEL.BIN
